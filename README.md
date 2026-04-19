@@ -31,8 +31,8 @@ cd <repo>
 cmake -S . -B build -G Ninja           # or "-G 'Unix Makefiles'"
 cmake --build build -j
 ./build/destruct                       # default: cube, 20 Voronoi fragments
-./build/destruct assets/woody.obj      # any OBJ with 'v' and 'f' lines
-./build/destruct assets/woody.obj 40   # OBJ with 40 fragments
+./build/destruct assets/teapot.obj      # any OBJ with 'v' and 'f' lines
+./build/destruct assets/teapot.obj 40   # OBJ with 40 fragments
 ```
 
 System requirements: OpenGL 3.3 core profile (any GPU from the last
