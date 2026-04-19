@@ -33,7 +33,6 @@ cmake --build build -j
 ./build/destruct                        # default: cube, 20 Voronoi fragments
 ./build/destruct assets/teapot.obj      # any OBJ with 'v' and 'f' lines
 ./build/destruct assets/teapot.obj 40   # OBJ with 40 fragments
-./build/destruct                        # for default cube
 ```
 
 System requirements: OpenGL 3.3 core profile (any GPU from the last
