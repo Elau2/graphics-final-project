@@ -156,6 +156,10 @@ capturing the OpenGL framebuffer with a screenshot tool. The lighting,
 camera motion, and color palette are all from this repo's shaders and
 renderer.
 
+If rendering speed or collision accuracy is not adequate, in PhysicWorld.cpp we can modify the following parameters to increase performance or increase collision accuracy:
+kBodyCollisionIterations: Decrease to improve rendering speed, increase to improve collision accuracy
+maxContacts: Decrease to improve rendering speed, increase to improve collision accuracy
+
 ## Source layout
 
 ```

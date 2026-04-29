@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <vector>
 
 namespace destruct {
 
@@ -57,7 +59,10 @@ void PhysicsWorld::step(float dt)
 
     // 3. Collision detection + impulse resolution.
     collideGround();
-    collideBodies();
+    constexpr int kBodyCollisionIterations = 4;
+    for (int i = 0; i < kBodyCollisionIterations; ++i) {
+        collideBodies();
+    }
 
     // 4. Put slow-moving bodies to sleep so gravity + restitution don't
     //    perpetually nudge resting piles.
@@ -207,6 +212,160 @@ void applyPositionalCorrection(RigidBody* a, RigidBody* b,
     if (b) b->position -= b->invMass * correction;
 }
 
+glm::vec3 closestPointOnTriangle(const glm::vec3& p,
+                                 const glm::vec3& a,
+                                 const glm::vec3& b,
+                                 const glm::vec3& c)
+{
+    const glm::vec3 ab = b - a;
+    const glm::vec3 ac = c - a;
+    const glm::vec3 ap = p - a;
+    const float d1 = glm::dot(ab, ap);
+    const float d2 = glm::dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) return a;
+
+    const glm::vec3 bp = p - b;
+    const float d3 = glm::dot(ab, bp);
+    const float d4 = glm::dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) return b;
+
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        const float v = d1 / (d1 - d3);
+        return a + v * ab;
+    }
+
+    const glm::vec3 cp = p - c;
+    const float d5 = glm::dot(ab, cp);
+    const float d6 = glm::dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) return c;
+
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        const float w = d2 / (d2 - d6);
+        return a + w * ac;
+    }
+
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return b + w * (c - b);
+    }
+
+    const float denom = 1.0f / (va + vb + vc);
+    const float v = vb * denom;
+    const float w = vc * denom;
+    return a + ab * v + ac * w;
+}
+
+bool rayIntersectsTriangle(const glm::vec3& o,
+                           const glm::vec3& d,
+                           const glm::vec3& a,
+                           const glm::vec3& b,
+                           const glm::vec3& c,
+                           float& tOut)
+{
+    constexpr float EPS = 1e-7f;
+    const glm::vec3 e1 = b - a;
+    const glm::vec3 e2 = c - a;
+    const glm::vec3 p = glm::cross(d, e2);
+    const float det = glm::dot(e1, p);
+    if (std::fabs(det) < EPS) return false;
+
+    const float invDet = 1.0f / det;
+    const glm::vec3 tv = o - a;
+    const float u = glm::dot(tv, p) * invDet;
+    if (u < -EPS || u > 1.0f + EPS) return false;
+
+    const glm::vec3 q = glm::cross(tv, e1);
+    const float v = glm::dot(d, q) * invDet;
+    if (v < -EPS || u + v > 1.0f + EPS) return false;
+
+    const float t = glm::dot(e2, q) * invDet;
+    if (t <= EPS) return false;
+    tOut = t;
+    return true;
+}
+
+bool pointInsideClosedMesh(const Mesh& mesh, const glm::vec3& p)
+{
+    const glm::vec3 rayDir =
+        glm::normalize(glm::vec3(1.0f, 0.37139067f, 0.17320508f));
+
+    std::vector<float> hits;
+    hits.reserve(16);
+
+    for (const Tri& tri : mesh.triangles) {
+        float t = 0.0f;
+        if (!rayIntersectsTriangle(p, rayDir,
+                                   mesh.vertices[tri.a],
+                                   mesh.vertices[tri.b],
+                                   mesh.vertices[tri.c],
+                                   t))
+        {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (float oldT : hits) {
+            if (std::fabs(oldT - t) < 1e-5f) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) hits.push_back(t);
+    }
+
+    return (hits.size() % 2) == 1;
+}
+
+bool penetrationAgainstMesh(const Mesh& mesh,
+                            const glm::vec3& pLocal,
+                            float slop,
+                            float& outDepth,
+                            glm::vec3& outNormalLocal)
+{
+    float bestD2 = std::numeric_limits<float>::max();
+    glm::vec3 bestNormal(0.0f, 1.0f, 0.0f);
+
+    for (const Tri& tri : mesh.triangles) {
+        const glm::vec3& a = mesh.vertices[tri.a];
+        const glm::vec3& b = mesh.vertices[tri.b];
+        const glm::vec3& c = mesh.vertices[tri.c];
+
+        const glm::vec3 closest = closestPointOnTriangle(pLocal, a, b, c);
+        const glm::vec3 delta = pLocal - closest;
+        const float d2 = glm::dot(delta, delta);
+        if (d2 >= bestD2) continue;
+
+        glm::vec3 n = glm::cross(b - a, c - a);
+        const float nLen = glm::length(n);
+        if (nLen <= 1e-8f) continue;
+        n /= nLen;
+
+        const glm::vec3 centroid = (a + b + c) / 3.0f;
+        if (glm::dot(n, centroid) < 0.0f) n = -n;
+
+        bestD2 = d2;
+        bestNormal = n;
+    }
+
+    if (bestD2 == std::numeric_limits<float>::max()) return false;
+
+    outDepth = std::sqrt(bestD2);
+    if (outDepth <= slop) return false;
+    if (!pointInsideClosedMesh(mesh, pLocal)) return false;
+
+    outNormalLocal = bestNormal;
+    return true;
+}
+
+struct Contact {
+    glm::vec3 point{0.0f};
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    float penetration = 0.0f;
+};
+
 } // anonymous namespace
 
 // Ground collision: multi-contact impulse, single positional correction
@@ -255,7 +414,7 @@ void PhysicsWorld::collideGround()
     }
 }
 
-// Body-body collision: single deepest contact per pair (unchanged behaviour)
+// Body-body collision: confirmed surface contacts per pair.
 void PhysicsWorld::collideBodies()
 {
     // O(N^2) broad-phase: acceptable at the fragment counts we target.
@@ -275,54 +434,70 @@ void PhysicsWorld::collideBodies()
             float rSum = a->boundingRadius + b->boundingRadius;
             if (glm::dot(delta, delta) > rSum * rSum) continue;
 
-            // Narrow phase: test every vertex of A against B's body-space
-            // AABB (and vice versa), keeping the deepest penetration as a
-            // single contact. Rough but adequate for the small fragment
-            // sizes this project targets.
-            float deepestPen = 0.0f;
-            glm::vec3 bestWorld(0.0f);
-            glm::vec3 bestNormal(0.0f, 1.0f, 0.0f);
-            bool have = false;
+            // Narrow phase: use the other body's local AABB as a cheap
+            // reject, then confirm against its closed mesh surface. Keep
+            // several contacts so face-on-face uniform blocks cannot pivot
+            // around one corner and sink into each other.
+            std::vector<Contact> contacts;
+            contacts.reserve(16);
 
             auto probe = [&](RigidBody* P, RigidBody* Q) {
-                for (const auto& vLocal : P->meshLocal.vertices) {
-                    glm::vec3 w = P->bodyToWorld(vLocal);
+                auto probeLocalPoint = [&](const glm::vec3& pLocal) {
+                    glm::vec3 w = P->bodyToWorld(pLocal);
                     glm::vec3 qLocal = Q->worldToBody(w);
-                    if (qLocal.x < Q->aabbMin.x || qLocal.x > Q->aabbMax.x) continue;
-                    if (qLocal.y < Q->aabbMin.y || qLocal.y > Q->aabbMax.y) continue;
-                    if (qLocal.z < Q->aabbMin.z || qLocal.z > Q->aabbMax.z) continue;
+                    if (qLocal.x < Q->aabbMin.x || qLocal.x > Q->aabbMax.x) return;
+                    if (qLocal.y < Q->aabbMin.y || qLocal.y > Q->aabbMax.y) return;
+                    if (qLocal.z < Q->aabbMin.z || qLocal.z > Q->aabbMax.z) return;
 
-                    // Penetration = distance to nearest face of the AABB.
-                    float dx1 = qLocal.x - Q->aabbMin.x;
-                    float dx2 = Q->aabbMax.x - qLocal.x;
-                    float dy1 = qLocal.y - Q->aabbMin.y;
-                    float dy2 = Q->aabbMax.y - qLocal.y;
-                    float dz1 = qLocal.z - Q->aabbMin.z;
-                    float dz2 = Q->aabbMax.z - qLocal.z;
-
-                    float minD = dx1;  glm::vec3 nLocal(-1, 0, 0);
-                    if (dx2 < minD) { minD = dx2; nLocal = glm::vec3( 1, 0, 0); }
-                    if (dy1 < minD) { minD = dy1; nLocal = glm::vec3( 0,-1, 0); }
-                    if (dy2 < minD) { minD = dy2; nLocal = glm::vec3( 0, 1, 0); }
-                    if (dz1 < minD) { minD = dz1; nLocal = glm::vec3( 0, 0,-1); }
-                    if (dz2 < minD) { minD = dz2; nLocal = glm::vec3( 0, 0, 1); }
-
-                    if (minD > deepestPen) {
-                        deepestPen = minD;
-                        bestWorld  = w;
-                        bestNormal = glm::normalize(Q->orientation * (-nLocal));
-                        have = true;
+                    float pen = 0.0f;
+                    glm::vec3 nLocal(0.0f, 1.0f, 0.0f);
+                    if (!penetrationAgainstMesh(Q->meshLocal, qLocal,
+                                                positionSlop, pen, nLocal))
+                    {
+                        return;
                     }
+
+                    glm::vec3 n = glm::normalize(Q->orientation * nLocal);
+                    if (P == b && Q == a) n = -n;
+                    contacts.push_back({ w, n, pen });
+                };
+
+                for (const auto& vLocal : P->meshLocal.vertices) {
+                    probeLocalPoint(vLocal);
+                }
+
+                // Face-on-face uniform blocks can overlap without any corner
+                // being strictly inside the other mesh. Triangle centroids
+                // give those broad faces contact points of their own.
+                for (const Tri& tri : P->meshLocal.triangles) {
+                    const glm::vec3 centroid =
+                        (P->meshLocal.vertices[tri.a] +
+                         P->meshLocal.vertices[tri.b] +
+                         P->meshLocal.vertices[tri.c]) / 3.0f;
+                    probeLocalPoint(centroid);
                 }
             };
 
             probe(a, b);
             probe(b, a);
 
-            if (have && deepestPen > 0.0f) {
-                applyVelocityImpulse(a, b, bestWorld, bestNormal,
-                                     restitutionThreshold);
-                applyPositionalCorrection(a, b, bestNormal, deepestPen,
+            if (!contacts.empty()) {
+                std::sort(contacts.begin(), contacts.end(),
+                    [](const Contact& lhs, const Contact& rhs) {
+                        return lhs.penetration > rhs.penetration;
+                    });
+
+                const std::size_t maxContacts = std::min<std::size_t>(
+                    contacts.size(), 8);
+                for (std::size_t c = 0; c < maxContacts; ++c) {
+                    applyVelocityImpulse(a, b, contacts[c].point,
+                                         contacts[c].normal,
+                                         restitutionThreshold);
+                }
+
+                const Contact& deepest = contacts.front();
+                applyPositionalCorrection(a, b, deepest.normal,
+                                          deepest.penetration,
                                           positionSlop, positionPercent);
             }
         }
