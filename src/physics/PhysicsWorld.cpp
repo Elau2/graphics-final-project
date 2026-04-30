@@ -118,8 +118,6 @@ void PhysicsWorld::integrateForces(float dt)
 
 namespace {
  
-// ---- Velocity impulse (unchanged logic, no allocation) --------------------
- 
 void applyVelocityImpulse(RigidBody* a, RigidBody* b,
                           const glm::vec3& worldPoint,
                           const glm::vec3& n,
@@ -363,10 +361,7 @@ bool penetrationAgainstMesh(const Mesh& mesh,
 constexpr int kMaxContacts = 64;
  
 } // anonymous namespace
- 
-// ---------------------------------------------------------------------------
-// Ground collision (unchanged logic)
-// ---------------------------------------------------------------------------
+
 void PhysicsWorld::collideGround()
 {
     const glm::vec3 n(0.0f, 1.0f, 0.0f);
@@ -588,10 +583,7 @@ void PhysicsWorld::collideBodiesResolve()
                                   positionSlop, positionPercent);
     }
 }
- 
-// ---------------------------------------------------------------------------
-// Sleep latching (unchanged)
-// ---------------------------------------------------------------------------
+
 void PhysicsWorld::updateSleep(float dt)
 {
     const float linSq = sleepLinear  * sleepLinear;
