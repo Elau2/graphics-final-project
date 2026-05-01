@@ -274,8 +274,9 @@ int Application::run()
         if (titleElapsed >= 0.25) {
             const double fps = frameCount_ / titleElapsed;
             char title[256];
-            std::snprintf(title, sizeof(title), "%s - %d FPS",
+            std::snprintf(title, sizeof(title), "%s - %zu fragments - %d FPS",
                           cfg_.windowTitle.c_str(),
+                          world_.bodies.size(),
                           static_cast<int>(std::round(fps)));
             glfwSetWindowTitle(window_, title);
             lastTitleTime_ = now;
