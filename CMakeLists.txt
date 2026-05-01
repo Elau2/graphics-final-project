@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(GeometryDestructionSimulator LANGUAGES CXX C)
 
 # ---------- General settings ----------
@@ -54,6 +55,11 @@ if(NOT GLEW_FOUND)
     )
     FetchContent_MakeAvailable(glew)
     add_library(GLEW::GLEW ALIAS libglew_static)
+    if(APPLE)
+        set_target_properties(libglew_static PROPERTIES
+            INTERFACE_LINK_LIBRARIES OpenGL::GL
+        )
+    endif()
 endif()
 
 find_package(OpenGL REQUIRED)

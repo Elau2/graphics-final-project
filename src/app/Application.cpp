@@ -245,6 +245,8 @@ int Application::run()
     camera_.distance = 4.5f;
 
     lastTime_ = glfwGetTime();
+    lastTitleTime_ = lastTime_;
+    frameCount_ = 0;
 
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
@@ -252,6 +254,18 @@ int Application::run()
         double now = glfwGetTime();
         float  dt  = static_cast<float>(now - lastTime_);
         lastTime_  = now;
+        ++frameCount_;
+        const double titleElapsed = now - lastTitleTime_;
+        if (titleElapsed >= 0.25) {
+            const double fps = frameCount_ / titleElapsed;
+            char title[256];
+            std::snprintf(title, sizeof(title), "%s - %d FPS",
+                          cfg_.windowTitle.c_str(),
+                          static_cast<int>(std::round(fps)));
+            glfwSetWindowTitle(window_, title);
+            lastTitleTime_ = now;
+            frameCount_ = 0;
+        }
         // Clamp dt to avoid a giant explosion on a slow frame.
         dt = std::min(dt, 1.0f / 20.0f);
 

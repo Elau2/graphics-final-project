@@ -138,7 +138,9 @@ private:
     std::vector<RBState> initialStates_;
 
     // Timing.
-    double lastTime_ = 0.0;
+    double lastTime_       = 0.0;
+    double lastTitleTime_  = 0.0;
+    int    frameCount_     = 0;
 };
 
 } // namespace destruct
