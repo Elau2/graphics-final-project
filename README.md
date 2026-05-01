@@ -56,7 +56,7 @@ fragments, and start it deliberately with Space.
 | `V`                  | switch to Voronoi fracture + refracture              |
 | `U`                  | switch to uniform-grid fracture + refracture         |
 | `←` / `→`            | scrub playback (only while paused)                   |
-| `↑` / `↓`            | increase / decrease fragment count (takes effect on next F/V/U) |
+| `↑` / `↓`            | increase / decrease fragment count + refracture       |
 | `G`                  | apply an upward impulse to every fragment            |
 | `Esc`                | quit                                                 |
 
@@ -158,7 +158,7 @@ renderer.
 
 If rendering speed or collision accuracy is not adequate, in PhysicWorld.cpp we can modify the following parameters to increase performance or increase collision accuracy:
 kBodyCollisionIterations: Decrease to improve rendering speed, increase to improve collision accuracy
-maxContacts: Decrease to improve rendering speed, increase to improve collision accuracy
+kMaxContacts: Decrease to improve rendering speed, increase to improve collision accuracy
 
 ## Source layout
 

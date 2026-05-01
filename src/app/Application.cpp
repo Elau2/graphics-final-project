@@ -151,6 +151,20 @@ void Application::clearScene()
     initialStates_.clear();
 }
 
+void Application::syncUniformGridToFragmentCount()
+{
+    uniformNx_ = uniformNy_ = uniformNz_ = 1;
+    while (uniformNx_ * uniformNy_ * uniformNz_ < currentFragmentCount_) {
+        if (uniformNx_ <= uniformNy_ && uniformNx_ <= uniformNz_) {
+            ++uniformNx_;
+        } else if (uniformNy_ <= uniformNz_) {
+            ++uniformNy_;
+        } else {
+            ++uniformNz_;
+        }
+    }
+}
+
 void Application::buildRigidBodiesAndGPUMeshes(
     const std::vector<Mesh>& fragments)
 {
@@ -212,9 +226,9 @@ void Application::refracture(FractureMethod method,
         voronoiFracture(sourceMesh_, params, fragments);
     } else {
         UniformFractureParams up;
-        int side = std::max(2,
-            static_cast<int>(std::ceil(std::cbrt((double)currentFragmentCount_))));
-        up.nx = up.ny = up.nz = side;
+        up.nx = uniformNx_;
+        up.ny = uniformNy_;
+        up.nz = uniformNz_;
         uniformFracture(sourceMesh_, up, fragments);
     }
 
@@ -238,6 +252,7 @@ int Application::run()
 
     loadSourceMesh();
     currentFragmentCount_ = cfg_.initialFragments;
+    syncUniformGridToFragmentCount();
     refracture(FractureMethod::Voronoi, false, glm::vec3(0.0f));
 
     // Nice starting camera: look at the rough scene centre.
@@ -524,6 +539,7 @@ void Application::handleKey(int k, int /*s*/, int act, int /*mods*/)
         break;
     case GLFW_KEY_U:
         method_ = FractureMethod::Uniform;
+        syncUniformGridToFragmentCount();
         refracture(method_, false, glm::vec3(0.0f));
         break;
     case GLFW_KEY_SPACE:
@@ -546,10 +562,34 @@ void Application::handleKey(int k, int /*s*/, int act, int /*mods*/)
         }
         break;
     case GLFW_KEY_UP:
-        currentFragmentCount_ = std::min(currentFragmentCount_ + 5, 200);
+        if (method_ == FractureMethod::Uniform) {
+            if (uniformNx_ <= uniformNy_ && uniformNx_ <= uniformNz_) {
+                ++uniformNx_;
+            } else if (uniformNy_ <= uniformNz_) {
+                ++uniformNy_;
+            } else {
+                ++uniformNz_;
+            }
+            currentFragmentCount_ = uniformNx_ * uniformNy_ * uniformNz_;
+        } else {
+            currentFragmentCount_ = std::min(currentFragmentCount_ + 5, 200);
+        }
+        refracture(method_, false, glm::vec3(0.0f));
         break;
     case GLFW_KEY_DOWN:
-        currentFragmentCount_ = std::max(currentFragmentCount_ - 5, 4);
+        if (method_ == FractureMethod::Uniform) {
+            if (uniformNx_ >= uniformNy_ && uniformNx_ >= uniformNz_ && uniformNx_ > 1) {
+                --uniformNx_;
+            } else if (uniformNy_ >= uniformNz_ && uniformNy_ > 1) {
+                --uniformNy_;
+            } else if (uniformNz_ > 1) {
+                --uniformNz_;
+            }
+            currentFragmentCount_ = std::max(1, uniformNx_ * uniformNy_ * uniformNz_);
+        } else {
+            currentFragmentCount_ = std::max(currentFragmentCount_ - 5, 4);
+        }
+        refracture(method_, false, glm::vec3(0.0f));
         break;
     case GLFW_KEY_G:
         // "Pop" -- upward impulse to every body. applyImpulseAtPoint

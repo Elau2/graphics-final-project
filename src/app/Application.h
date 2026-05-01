@@ -16,7 +16,7 @@
 //   * V                : switch to Voronoi fracture + refracture
 //   * U                : switch to uniform-grid fracture + refracture
 //   * Left / Right     : scrub playback (when paused)
-//   * Up / Down        : increase / decrease fragment count (takes effect on F/V/U)
+//   * Up / Down        : increase / decrease fragment count + refracture
 //   * G                : pop — upward impulse on every fragment
 //   * Esc              : quit
 
@@ -72,6 +72,7 @@ private:
     void refracture(FractureMethod method,
                     bool impactBiased,
                     const glm::vec3& impactPoint);
+    void syncUniformGridToFragmentCount();
     void clearScene();
     void buildRigidBodiesAndGPUMeshes(const std::vector<Mesh>& fragments);
 
@@ -132,6 +133,9 @@ private:
     bool showUniform_      = false;
     FractureMethod method_ = FractureMethod::Voronoi;
     int    currentFragmentCount_ = 20;
+    int    uniformNx_ = 3;
+    int    uniformNy_ = 3;
+    int    uniformNz_ = 3;
 
     // Initial post-fracture transforms — used by Restart (R) to reset the
     // scene to its starting configuration without regenerating fragments.
