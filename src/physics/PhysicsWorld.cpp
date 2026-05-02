@@ -65,15 +65,17 @@ void PhysicsWorld::step(float dt)
     // 3. Collision detection + impulse resolution.
     collideGround(dt);
  
-    // First iteration: full broad-phase detection + resolve, cache pairs.
+    // Broad-phase detection caches contact pairs for this step.
     collideBodiesDetect();
-    collideBodiesResolve();
- 
-    // Subsequent iterations: re-resolve cached pairs only (skip detection).
+
+    // Velocity-only passes: converge contact velocities without touching positions.
     constexpr int kExtraIterations = 3;
     for (int i = 0; i < kExtraIterations; ++i) {
-        collideBodiesResolve();
+        collideBodiesResolve(false);
     }
+    // One position-correction pass after velocities converge. Applying it every
+    // iteration would scale the correction by iteration count, causing pops.
+    collideBodiesResolve(true);
  
     // 4. Put slow-moving bodies to sleep.
     updateSleep(dt);
@@ -661,8 +663,10 @@ void PhysicsWorld::collideBodiesDetect()
         if (glm::dot(delta, delta) > rSum * rSum) continue;
  
         // Wake sleeper if the other body is live and close.
-        if (a->sleeping) { a->sleeping = false; a->sleepTimer = 0.0f; }
-        if (b->sleeping) { b->sleeping = false; b->sleepTimer = 0.0f; }
+        // Do NOT reset sleepTimer here: that would prevent re-sleeping after
+        // a trivial nudge. updateSleep() resets it when |v| exceeds the threshold.
+        if (a->sleeping) a->sleeping = false;
+        if (b->sleeping) b->sleeping = false;
 
         // Zero-relative-motion skip: during free fall all fragments move
         // identically under gravity → relative velocity ≈ 0 and contacts
@@ -763,7 +767,7 @@ void PhysicsWorld::collideBodiesDetect()
 }
  
 // Re-resolve cached pairs without repeating detection.
-void PhysicsWorld::collideBodiesResolve()
+void PhysicsWorld::collideBodiesResolve(bool doPositionCorrection)
 {
     for (auto& pair : cachedPairs) {
         if (pair.contactCount == 0) continue; // zero-contact skip entries
@@ -777,11 +781,16 @@ void PhysicsWorld::collideBodiesResolve()
                                  pair.contacts[c].normal,
                                  restitutionThreshold);
         }
- 
-        const auto& deepest = pair.contacts[0];
-        applyPositionalCorrection(a, b,
-                                  deepest.normal, deepest.penetration,
-                                  positionSlop, positionPercent);
+
+        // Position correction uses the stale penetration depth from detection.
+        // Applying it every resolve iteration multiplies the correction by the
+        // number of iterations, causing large position pops. Apply only once.
+        if (doPositionCorrection) {
+            const auto& deepest = pair.contacts[0];
+            applyPositionalCorrection(a, b,
+                                      deepest.normal, deepest.penetration,
+                                      positionSlop, positionPercent);
+        }
     }
 }
 
