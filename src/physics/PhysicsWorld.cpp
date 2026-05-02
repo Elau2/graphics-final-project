@@ -452,9 +452,17 @@ bool penetrationAgainstMesh(const Mesh& mesh,
     if (!mesh.bvh.empty()) {
         bvhFindClosest(mesh.bvh, mesh.vertices, mesh.triangles, 0,
                        pLocal, bestD2, bestNormal);
+        // Early-out: if the probe is within slop distance of the surface it can't
+        // generate a meaningful contact — skip the ray-cast entirely.
+        if (bestD2 == std::numeric_limits<float>::max()) return false;
+        outDepth = std::sqrt(bestD2);
+        if (outDepth <= slop) return false;
         const glm::vec3 invD(1.0f / kRayDir.x, 1.0f / kRayDir.y, 1.0f / kRayDir.z);
         bvhRayCast(mesh.bvh, mesh.vertices, mesh.triangles, 0,
                    pLocal, kRayDir, invD, hitTs, hitCount);
+        if ((hitCount % 2) == 0) return false;
+        outNormalLocal = bestNormal;
+        return true;
     } else {
         // Single combined linear pass: closest-point + ray-cast together.
         for (const Tri& tri : mesh.triangles) {
@@ -544,8 +552,16 @@ static uint64_t spatialHashKey(int x, int y, int z)
  
 void PhysicsWorld::collideBodiesDetect()
 {
-    cachedPairs.clear();
- 
+    // Rotate last frame's pairs aside so we can skip narrow-phase for pairs
+    // that were zero-contact and still have near-zero relative velocity.
+    std::vector<CachedPair> prevPairs;
+    prevPairs.swap(cachedPairs);  // cachedPairs now empty; prevPairs has last frame
+    std::sort(prevPairs.begin(), prevPairs.end(),
+        [](const CachedPair& x, const CachedPair& y){
+            if (x.a != y.a) return x.a < y.a;
+            return x.b < y.b;
+        });
+
     const std::size_t N = bodies.size();
     if (N < 2) return;
  
@@ -638,7 +654,32 @@ void PhysicsWorld::collideBodiesDetect()
         // Wake sleeper if the other body is live and close.
         if (a->sleeping) { a->sleeping = false; a->sleepTimer = 0.0f; }
         if (b->sleeping) { b->sleeping = false; b->sleepTimer = 0.0f; }
- 
+
+        // Zero-relative-motion skip: during free fall all fragments move
+        // identically under gravity → relative velocity ≈ 0 and contacts
+        // are guaranteed zero. If the previous frame confirmed no contact for
+        // this pair AND relative velocity is still tiny, skip the expensive
+        // narrow-phase and carry forward the zero-contact entry.
+        {
+            constexpr float kSkipEps2 = 0.01f * 0.01f; // 1 cm/s threshold
+            glm::vec3 rv = a->linearVelocity  - b->linearVelocity;
+            glm::vec3 ra = a->angularVelocity - b->angularVelocity;
+            if (glm::dot(rv, rv) + glm::dot(ra, ra) < kSkipEps2) {
+                CachedPair key{a, b, 0, {}};
+                auto it = std::lower_bound(prevPairs.begin(), prevPairs.end(), key,
+                    [](const CachedPair& x, const CachedPair& y){
+                        if (x.a != y.a) return x.a < y.a;
+                        return x.b < y.b;
+                    });
+                if (it != prevPairs.end() && it->a == a && it->b == b
+                    && it->contactCount == 0)
+                {
+                    cachedPairs.push_back(key); // carry forward for next frame
+                    continue;
+                }
+            }
+        }
+
         // Stack-allocated contact buffer — no heap allocation per pair.
         std::array<Contact, kMaxContacts> contacts;
         int contactCount = 0;
@@ -687,8 +728,13 @@ void PhysicsWorld::collideBodiesDetect()
         probe(a, b);
         probe(b, a);
  
-        if (contactCount == 0) continue;
- 
+        if (contactCount == 0) {
+            // Cache zero-contact result so the next frame can skip this pair
+            // when relative velocity is still near zero.
+            cachedPairs.push_back({a, b, 0, {}});
+            continue;
+        }
+
         // Sort by penetration depth (deepest first), then trim to 8.
         std::sort(contacts.begin(), contacts.begin() + contactCount,
             [](const Contact& lhs, const Contact& rhs) {
@@ -711,9 +757,11 @@ void PhysicsWorld::collideBodiesDetect()
 void PhysicsWorld::collideBodiesResolve()
 {
     for (auto& pair : cachedPairs) {
+        if (pair.contactCount == 0) continue; // zero-contact skip entries
+
         RigidBody* a = pair.a;
         RigidBody* b = pair.b;
- 
+
         for (int c = 0; c < pair.contactCount; ++c) {
             applyVelocityImpulse(a, b,
                                  pair.contacts[c].point,
