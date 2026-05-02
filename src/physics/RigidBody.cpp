@@ -55,6 +55,7 @@ RigidBody::fromMesh(Mesh mesh, float density)
 
     rb->meshLocal = std::move(mesh);
     rb->meshLocal.computeAABB(rb->aabbMin, rb->aabbMax);
+    rb->meshLocal.buildBVH();
 
     // Bounding sphere around body origin = CoM.
     float r2 = 0.0f;

@@ -20,6 +20,16 @@ struct Tri {
     Tri(uint32_t a_, uint32_t b_, uint32_t c_) : a(a_), b(b_), c(c_) {}
 };
 
+// Bounding-volume hierarchy node for fast ray-cast and closest-point queries.
+// Built once after mesh geometry is finalized; never modified after that.
+struct BVHNode {
+    glm::vec3 aabbMin{};
+    glm::vec3 aabbMax{};
+    int left  = -1;   // index into Mesh::bvh; -1 means this is a leaf
+    int right = -1;
+    int triIdx = -1;  // triangle index (leaf only)
+};
+
 class Mesh {
 public:
     // Raw geometry. We keep them public because the mesh pipeline (clipping,
@@ -28,6 +38,7 @@ public:
     std::vector<glm::vec3> vertices;
     std::vector<glm::vec3> normals;    // per-vertex normals (may be empty until computed)
     std::vector<Tri>       triangles;
+    std::vector<BVHNode>   bvh;        // populated by buildBVH(); empty until then
 
     Mesh() = default;
 
@@ -57,6 +68,10 @@ public:
     // Factory: a unit-ish cube centred at the origin, 12 triangles, 8 vertices.
     // Handy when no OBJ is supplied and for smoke tests of the clipper.
     static Mesh makeCube(float halfSize = 0.5f);
+
+    // Build a BVH over the triangle list. Call once after geometry is finalized.
+    // Used by PhysicsWorld for O(log T) narrow-phase queries.
+    void buildBVH();
 
     // Factory: a UV sphere. Useful for the "shatter a sphere" demo.
     static Mesh makeSphere(float radius, int slices, int stacks);

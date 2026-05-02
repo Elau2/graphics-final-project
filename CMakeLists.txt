@@ -15,6 +15,8 @@ if(MSVC)
     add_compile_options(/W3 /permissive- /Zc:__cplusplus)
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+    # Enable native SIMD/vectorisation in Release for the physics hot path.
+    add_compile_options($<$<CONFIG:Release>:-march=native>)
 endif()
 
 # Copy shaders next to the binary so the runtime can find them.

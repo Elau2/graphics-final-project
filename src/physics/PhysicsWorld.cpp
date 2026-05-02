@@ -117,7 +117,159 @@ void PhysicsWorld::integrateForces(float dt)
 // ---------------------------------------------------------------------------
 
 namespace {
- 
+
+// Forward declaration — defined below alongside closestPointOnTriangle.
+static bool rayIntersectsTriangle(const glm::vec3& o, const glm::vec3& d,
+                                   const glm::vec3& a, const glm::vec3& b,
+                                   const glm::vec3& c, float& tOut);
+
+// ---------------------------------------------------------------------------
+// Geometry helpers
+// ---------------------------------------------------------------------------
+
+// Squared distance from point p to an AABB.
+static float distSqToAABB(const glm::vec3& p,
+                           const glm::vec3& mn, const glm::vec3& mx)
+{
+    float dx = std::max(0.0f, std::max(mn.x - p.x, p.x - mx.x));
+    float dy = std::max(0.0f, std::max(mn.y - p.y, p.y - mx.y));
+    float dz = std::max(0.0f, std::max(mn.z - p.z, p.z - mx.z));
+    return dx*dx + dy*dy + dz*dz;
+}
+
+// Slab test: does the infinite ray (origin o, precomputed invDir 1/d) hit AABB?
+static bool rayHitsAABB(const glm::vec3& o, const glm::vec3& invD,
+                         const glm::vec3& mn, const glm::vec3& mx)
+{
+    float tmin = -std::numeric_limits<float>::max();
+    float tmax =  std::numeric_limits<float>::max();
+    for (int i = 0; i < 3; ++i) {
+        float t1 = (mn[i] - o[i]) * invD[i];
+        float t2 = (mx[i] - o[i]) * invD[i];
+        if (t1 > t2) std::swap(t1, t2);
+        tmin = std::max(tmin, t1);
+        tmax = std::min(tmax, t2);
+    }
+    return tmax >= 0.0f && tmin <= tmax;
+}
+
+// ---------------------------------------------------------------------------
+// BVH traversals
+// ---------------------------------------------------------------------------
+
+// Branch-and-bound closest-point search. Updates bestD2 / bestNormal in place.
+static void bvhFindClosest(const std::vector<BVHNode>& bvh,
+                            const std::vector<glm::vec3>& verts,
+                            const std::vector<Tri>& tris,
+                            int nodeIdx,
+                            const glm::vec3& p,
+                            float& bestD2,
+                            glm::vec3& bestNormal)
+{
+    const BVHNode& node = bvh[nodeIdx];
+    if (distSqToAABB(p, node.aabbMin, node.aabbMax) >= bestD2) return;
+
+    if (node.left == -1) {  // leaf
+        const Tri& tri = tris[node.triIdx];
+        const glm::vec3& a = verts[tri.a];
+        const glm::vec3& b = verts[tri.b];
+        const glm::vec3& c = verts[tri.c];
+
+        // Closest point on triangle (Ericson's method, same as closestPointOnTriangle).
+        const glm::vec3 ab = b - a, ac = c - a, ap = p - a;
+        const float d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
+        glm::vec3 closest;
+        if (d1 <= 0.0f && d2 <= 0.0f) { closest = a; }
+        else {
+            const glm::vec3 bp = p - b;
+            const float d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
+            if (d3 >= 0.0f && d4 <= d3) { closest = b; }
+            else {
+                const float vc = d1*d4 - d3*d2;
+                if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+                    closest = a + (d1 / (d1 - d3)) * ab;
+                } else {
+                    const glm::vec3 cp = p - c;
+                    const float d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+                    if (d6 >= 0.0f && d5 <= d6) { closest = c; }
+                    else {
+                        const float vb = d5*d2 - d1*d6;
+                        if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+                            closest = a + (d2 / (d2 - d6)) * ac;
+                        } else {
+                            const float va = d3*d6 - d5*d4;
+                            if (va <= 0.0f && (d4-d3) >= 0.0f && (d5-d6) >= 0.0f) {
+                                closest = b + ((d4-d3)/((d4-d3)+(d5-d6))) * (c - b);
+                            } else {
+                                const float denom = 1.0f / (va + vb + vc);
+                                closest = a + ab*(vb*denom) + ac*(vc*denom);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        const float d2val = glm::dot(p - closest, p - closest);
+        if (d2val < bestD2) {
+            glm::vec3 n = glm::cross(b - a, c - a);
+            const float nLen = glm::length(n);
+            if (nLen > 1e-8f) {
+                n /= nLen;
+                if (glm::dot(n, (a + b + c) / 3.0f) < 0.0f) n = -n;
+                bestD2 = d2val;
+                bestNormal = n;
+            }
+        }
+        return;
+    }
+
+    // Visit closer child first for better pruning.
+    float dL = distSqToAABB(p, bvh[node.left ].aabbMin, bvh[node.left ].aabbMax);
+    float dR = distSqToAABB(p, bvh[node.right].aabbMin, bvh[node.right].aabbMax);
+    if (dL <= dR) {
+        bvhFindClosest(bvh, verts, tris, node.left,  p, bestD2, bestNormal);
+        bvhFindClosest(bvh, verts, tris, node.right, p, bestD2, bestNormal);
+    } else {
+        bvhFindClosest(bvh, verts, tris, node.right, p, bestD2, bestNormal);
+        bvhFindClosest(bvh, verts, tris, node.left,  p, bestD2, bestNormal);
+    }
+}
+
+// Count forward ray hits for the odd-even inside test, deduplicating shared edges.
+static void bvhRayCast(const std::vector<BVHNode>& bvh,
+                        const std::vector<glm::vec3>& verts,
+                        const std::vector<Tri>& tris,
+                        int nodeIdx,
+                        const glm::vec3& o,
+                        const glm::vec3& d,
+                        const glm::vec3& invD,
+                        std::array<float, 16>& hitTs,
+                        int& hitCount)
+{
+    const BVHNode& node = bvh[nodeIdx];
+    if (!rayHitsAABB(o, invD, node.aabbMin, node.aabbMax)) return;
+
+    if (node.left == -1) {  // leaf
+        const Tri& tri = tris[node.triIdx];
+        float t = 0.0f;
+        if (!rayIntersectsTriangle(o, d,
+                                   verts[tri.a], verts[tri.b], verts[tri.c], t))
+            return;
+        for (int k = 0; k < hitCount; ++k)
+            if (std::fabs(hitTs[k] - t) < 1e-5f) return;  // duplicate
+        if (hitCount < (int)hitTs.size()) hitTs[hitCount++] = t;
+        return;
+    }
+
+    bvhRayCast(bvh, verts, tris, node.left,  o, d, invD, hitTs, hitCount);
+    bvhRayCast(bvh, verts, tris, node.right, o, d, invD, hitTs, hitCount);
+}
+
+// ---------------------------------------------------------------------------
+// Impulse / correction helpers
+// ---------------------------------------------------------------------------
+
 void applyVelocityImpulse(RigidBody* a, RigidBody* b,
                           const glm::vec3& worldPoint,
                           const glm::vec3& n,
@@ -281,77 +433,63 @@ bool rayIntersectsTriangle(const glm::vec3& o,
     return true;
 }
 
-bool pointInsideClosedMesh(const Mesh& mesh, const glm::vec3& p)
-{
-    static const glm::vec3 rayDir =
-        glm::normalize(glm::vec3(1.0f, 0.37139067f, 0.17320508f));
- 
-    // Small fixed dedup buffer on the stack — no heap involvement.
-    std::array<float, 16> hitTs;
-    int hitCount = 0;
- 
-    for (const Tri& tri : mesh.triangles) {
-        float t = 0.0f;
-        if (!rayIntersectsTriangle(p, rayDir,
-                                   mesh.vertices[tri.a],
-                                   mesh.vertices[tri.b],
-                                   mesh.vertices[tri.c],
-                                   t))
-        {
-            continue;
-        }
- 
-        bool duplicate = false;
-        for (int k = 0; k < hitCount; ++k) {
-            if (std::fabs(hitTs[k] - t) < 1e-5f) { duplicate = true; break; }
-        }
-        if (!duplicate) {
-            if (hitCount < (int)hitTs.size()) hitTs[hitCount++] = t;
-            // If we somehow overflow the buffer, treat as even (outside).
-            // This is safe for convex meshes and extremely unlikely otherwise.
-        }
-    }
- 
-    return (hitCount % 2) == 1;
-}
- 
+// Unified closest-point + inside test. Uses BVH when available (O(log T)),
+// falls back to a single combined linear pass over triangles.
 bool penetrationAgainstMesh(const Mesh& mesh,
                             const glm::vec3& pLocal,
                             float slop,
                             float& outDepth,
                             glm::vec3& outNormalLocal)
 {
+    static const glm::vec3 kRayDir =
+        glm::normalize(glm::vec3(1.0f, 0.37139067f, 0.17320508f));
+
     float bestD2 = std::numeric_limits<float>::max();
     glm::vec3 bestNormal(0.0f, 1.0f, 0.0f);
- 
-    for (const Tri& tri : mesh.triangles) {
-        const glm::vec3& a = mesh.vertices[tri.a];
-        const glm::vec3& b = mesh.vertices[tri.b];
-        const glm::vec3& c = mesh.vertices[tri.c];
- 
-        const glm::vec3 closest = closestPointOnTriangle(pLocal, a, b, c);
-        const glm::vec3 delta = pLocal - closest;
-        const float d2 = glm::dot(delta, delta);
-        if (d2 >= bestD2) continue;
- 
-        glm::vec3 n = glm::cross(b - a, c - a);
-        const float nLen = glm::length(n);
-        if (nLen <= 1e-8f) continue;
-        n /= nLen;
- 
-        const glm::vec3 centroid = (a + b + c) / 3.0f;
-        if (glm::dot(n, centroid) < 0.0f) n = -n;
- 
-        bestD2 = d2;
-        bestNormal = n;
+    std::array<float, 16> hitTs;
+    int hitCount = 0;
+
+    if (!mesh.bvh.empty()) {
+        bvhFindClosest(mesh.bvh, mesh.vertices, mesh.triangles, 0,
+                       pLocal, bestD2, bestNormal);
+        const glm::vec3 invD(1.0f / kRayDir.x, 1.0f / kRayDir.y, 1.0f / kRayDir.z);
+        bvhRayCast(mesh.bvh, mesh.vertices, mesh.triangles, 0,
+                   pLocal, kRayDir, invD, hitTs, hitCount);
+    } else {
+        // Single combined linear pass: closest-point + ray-cast together.
+        for (const Tri& tri : mesh.triangles) {
+            const glm::vec3& a = mesh.vertices[tri.a];
+            const glm::vec3& b = mesh.vertices[tri.b];
+            const glm::vec3& c = mesh.vertices[tri.c];
+
+            const glm::vec3 closest = closestPointOnTriangle(pLocal, a, b, c);
+            const float d2 = glm::dot(pLocal - closest, pLocal - closest);
+            if (d2 < bestD2) {
+                glm::vec3 n = glm::cross(b - a, c - a);
+                const float nLen = glm::length(n);
+                if (nLen > 1e-8f) {
+                    n /= nLen;
+                    if (glm::dot(n, (a + b + c) / 3.0f) < 0.0f) n = -n;
+                    bestD2 = d2;
+                    bestNormal = n;
+                }
+            }
+
+            float t = 0.0f;
+            if (rayIntersectsTriangle(pLocal, kRayDir, a, b, c, t)) {
+                bool dup = false;
+                for (int k = 0; k < hitCount; ++k)
+                    if (std::fabs(hitTs[k] - t) < 1e-5f) { dup = true; break; }
+                if (!dup && hitCount < (int)hitTs.size()) hitTs[hitCount++] = t;
+            }
+        }
     }
- 
+
     if (bestD2 == std::numeric_limits<float>::max()) return false;
- 
     outDepth = std::sqrt(bestD2);
     if (outDepth <= slop) return false;
-    if (!pointInsideClosedMesh(mesh, pLocal)) return false;
- 
+    if ((hitCount % 2) == 0) return false;  // odd-even inside test
+
     outNormalLocal = bestNormal;
     return true;
 }
@@ -506,31 +644,37 @@ void PhysicsWorld::collideBodiesDetect()
         int contactCount = 0;
  
         auto probe = [&](RigidBody* P, RigidBody* Q) {
+            // Precompute the P-local → Q-local transform once per probe direction.
+            // qLocal = PtoQ_rot * pLocal + PtoQ_off
+            // This replaces two quaternion*vector ops per probe with one mat3*vec3.
+            const glm::mat3 PtoQ_rot =
+                glm::mat3_cast(glm::conjugate(Q->orientation) * P->orientation);
+            const glm::vec3 PtoQ_off = Q->worldToBody(P->position);
+
             auto probeLocalPoint = [&](const glm::vec3& pLocal) {
                 if (contactCount >= kMaxContacts) return;
- 
-                glm::vec3 w      = P->bodyToWorld(pLocal);
-                glm::vec3 qLocal = Q->worldToBody(w);
+
+                const glm::vec3 qLocal = PtoQ_rot * pLocal + PtoQ_off;
                 if (qLocal.x < Q->aabbMin.x || qLocal.x > Q->aabbMax.x) return;
                 if (qLocal.y < Q->aabbMin.y || qLocal.y > Q->aabbMax.y) return;
                 if (qLocal.z < Q->aabbMin.z || qLocal.z > Q->aabbMax.z) return;
- 
+
                 float pen = 0.0f;
                 glm::vec3 nLocal(0.0f, 1.0f, 0.0f);
                 if (!penetrationAgainstMesh(Q->meshLocal, qLocal,
                                             positionSlop, pen, nLocal))
-                {
                     return;
-                }
- 
+
+                // Deferred: only compute world position when we have a real contact.
+                const glm::vec3 w = P->bodyToWorld(pLocal);
                 glm::vec3 n = glm::normalize(Q->orientation * nLocal);
                 if (P == b && Q == a) n = -n;
                 contacts[contactCount++] = { w, n, pen };
             };
- 
+
             for (const auto& vLocal : P->meshLocal.vertices)
                 probeLocalPoint(vLocal);
- 
+
             for (const Tri& tri : P->meshLocal.triangles) {
                 const glm::vec3 centroid =
                     (P->meshLocal.vertices[tri.a] +
