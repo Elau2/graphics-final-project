@@ -63,7 +63,7 @@ void PhysicsWorld::step(float dt)
     }
  
     // 3. Collision detection + impulse resolution.
-    collideGround();
+    collideGround(dt);
  
     // First iteration: full broad-phase detection + resolve, cache pairs.
     collideBodiesDetect();
@@ -508,31 +508,40 @@ constexpr int kMaxContacts = 64;
  
 } // anonymous namespace
 
-void PhysicsWorld::collideGround()
+void PhysicsWorld::collideGround(float dt)
 {
     const glm::vec3 n(0.0f, 1.0f, 0.0f);
- 
+
     for (auto& bPtr : bodies) {
         RigidBody* b = bPtr.get();
         if (b->isStatic()) continue;
         if (b->position.y - b->boundingRadius > groundY) continue;
- 
-        float     maxPen = 0.0f;
-        glm::vec3 deepest{0.0f};
-        bool      hasDeep = false;
- 
+
+        float     maxPen      = 0.0f;
+        glm::vec3 contactSum  {0.0f};
+        int       contactCount = 0;
+
         for (const auto& vLocal : b->meshLocal.vertices) {
             const glm::vec3 w = b->bodyToWorld(vLocal);
             const float pen = groundY - w.y;
             if (pen > 0.0f) {
-                applyVelocityImpulse(b, nullptr, w, n, restitutionThreshold);
-                if (pen > maxPen) { maxPen = pen; deepest = w; hasDeep = true; }
+                contactSum += w;
+                ++contactCount;
+                if (pen > maxPen) maxPen = pen;
             }
         }
- 
-        if (hasDeep) {
+
+        if (contactCount > 0) {
+            // Apply the velocity impulse at the CoM (b->position). ra = 0 means
+            // zero cross-product → zero torque → zero angular velocity generated.
+            // Any off-centre contact point injects angular velocity every step,
+            // which is the root cause of the earthquake rocking.
+            applyVelocityImpulse(b, nullptr, b->position, n, restitutionThreshold);
             applyPositionalCorrection(b, nullptr, n, maxPen,
                                       positionSlop, positionPercent);
+            // Decay spin so fragments that landed tumbling still come to rest.
+            const float angDecay = std::max(0.0f, 1.0f - 12.0f * dt);
+            b->angularVelocity *= angDecay;
         }
     }
 }
@@ -789,6 +798,11 @@ void PhysicsWorld::updateSleep(float dt)
  
         if (linKE2 < linSq && angKE2 < angSq) {
             b->sleepTimer += dt;
+            // Drain sub-threshold velocities so bodies converge to rest
+            // instead of jittering indefinitely near the sleep boundary.
+            const float drain = std::max(0.0f, 1.0f - 8.0f * dt);
+            b->linearVelocity  *= drain;
+            b->angularVelocity *= drain;
             if (b->sleepTimer >= sleepTime) {
                 b->sleeping        = true;
                 b->linearVelocity  = glm::vec3(0.0f);

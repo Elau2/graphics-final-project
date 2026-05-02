@@ -81,11 +81,13 @@ void RigidBody::applyImpulseAtPoint(const glm::vec3& impulse,
                                     const glm::vec3& worldPoint)
 {
     if (isStatic()) return;
-    // Any external impulse wakes the body. Collision resolution relies on
-    // this: when a moving body strikes a sleeping one, the impulse
-    // transferred here reactivates the struck body automatically.
-    sleeping   = false;
-    sleepTimer = 0.0f;
+    // Wake the body. We intentionally do NOT reset sleepTimer here: ground
+    // contact applies an impulse every step (gravity → impulse → v=0), and
+    // resetting the timer every step means bodies touching the ground can
+    // never accumulate enough time to sleep. updateSleep() resets the timer
+    // when velocity rises above the threshold (a real disturbance), so
+    // legitimate wake-ups are still handled correctly.
+    sleeping = false;
     linearVelocity  += invMass * impulse;
     angularVelocity += invIworld * glm::cross(worldPoint - position, impulse);
 }
