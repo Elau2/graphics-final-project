@@ -64,16 +64,16 @@ void PhysicsWorld::step(float dt)
  
     // 3. Collision detection + impulse resolution.
     collideGround();
- 
-    // First iteration: full broad-phase detection + resolve, cache pairs.
+
     collideBodiesDetect();
-    collideBodiesResolve();
- 
-    // Subsequent iterations: re-resolve cached pairs only (skip detection).
-    constexpr int kExtraIterations = 3;
+
+    constexpr int kExtraIterations = 4;
     for (int i = 0; i < kExtraIterations; ++i) {
         collideBodiesResolve();
     }
+
+    // Positional correction exactly once, after velocities have settled.
+    collideBodiesCorrect();
  
     // 4. Put slow-moving bodies to sleep.
     updateSleep(dt);
@@ -569,16 +569,20 @@ void PhysicsWorld::collideBodiesResolve()
     for (auto& pair : cachedPairs) {
         RigidBody* a = pair.a;
         RigidBody* b = pair.b;
- 
         for (int c = 0; c < pair.contactCount; ++c) {
             applyVelocityImpulse(a, b,
                                  pair.contacts[c].point,
                                  pair.contacts[c].normal,
                                  restitutionThreshold);
         }
- 
+    }
+}
+
+void PhysicsWorld::collideBodiesCorrect()
+{
+    for (auto& pair : cachedPairs) {
         const auto& deepest = pair.contacts[0];
-        applyPositionalCorrection(a, b,
+        applyPositionalCorrection(pair.a, pair.b,
                                   deepest.normal, deepest.penetration,
                                   positionSlop, positionPercent);
     }
@@ -588,14 +592,20 @@ void PhysicsWorld::updateSleep(float dt)
 {
     const float linSq = sleepLinear  * sleepLinear;
     const float angSq = sleepAngular * sleepAngular;
- 
+    // Smoothing factor: ~10 frame window
+    const float alpha = 1.0f - std::exp(-dt * 10.0f);
+
     for (auto& b : bodies) {
         if (b->isStatic() || b->sleeping) continue;
- 
+
         const float linKE2 = glm::dot(b->linearVelocity,  b->linearVelocity);
         const float angKE2 = glm::dot(b->angularVelocity, b->angularVelocity);
- 
-        if (linKE2 < linSq && angKE2 < angSq) {
+
+        // Smooth the energy estimate so a single jittery frame can't reset the timer.
+        b->sleepLinSmooth  += alpha * (linKE2  - b->sleepLinSmooth);
+        b->sleepAngSmooth  += alpha * (angKE2  - b->sleepAngSmooth);
+
+        if (b->sleepLinSmooth < linSq && b->sleepAngSmooth < angSq) {
             b->sleepTimer += dt;
             if (b->sleepTimer >= sleepTime) {
                 b->sleeping        = true;

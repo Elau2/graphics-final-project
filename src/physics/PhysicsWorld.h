@@ -93,6 +93,7 @@ private:
     void updateSleep(float dt);
     void collideBodiesDetect();
     void collideBodiesResolve();
+    void collideBodiesCorrect();  // add this
  
     struct CachedPair {
         RigidBody* a;

@@ -49,6 +49,9 @@ public:
     glm::vec3 linearVelocity{0.0f};
     glm::vec3 angularVelocity{0.0f};
 
+    float sleepLinSmooth = 0.0f;
+    float sleepAngSmooth = 0.0f;
+
     // --- Per-step accumulators ---
     glm::vec3 forceAccum{0.0f};
     glm::vec3 torqueAccum{0.0f};
