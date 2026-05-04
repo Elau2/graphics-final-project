@@ -4,8 +4,73 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <numeric>
 
 namespace destruct {
+
+namespace {
+
+// Returns the index of the newly created node in `nodes`.
+// Pre-condition: nodes.capacity() >= nodes.size() + 2*(end-start)-1
+// (caller does nodes.reserve(2*N) before the first call).
+static int buildBVHNode(std::vector<BVHNode>& nodes,
+                        const std::vector<glm::vec3>& verts,
+                        const std::vector<Tri>& tris,
+                        std::vector<int>& idx, int start, int end)
+{
+    int nodeIdx = (int)nodes.size();
+    nodes.push_back({});  // reserve slot (no realloc because of reserve())
+
+    glm::vec3 mn(std::numeric_limits<float>::max());
+    glm::vec3 mx(-std::numeric_limits<float>::max());
+    for (int i = start; i < end; ++i) {
+        const Tri& t = tris[idx[i]];
+        mn = glm::min(mn, glm::min(verts[t.a], glm::min(verts[t.b], verts[t.c])));
+        mx = glm::max(mx, glm::max(verts[t.a], glm::max(verts[t.b], verts[t.c])));
+    }
+    nodes[nodeIdx].aabbMin = mn;
+    nodes[nodeIdx].aabbMax = mx;
+
+    if (end - start == 1) {
+        nodes[nodeIdx].triIdx = idx[start];
+        return nodeIdx;
+    }
+
+    // Split on the longest axis at the midpoint of the node's AABB.
+    glm::vec3 ext = mx - mn;
+    int axis = (ext.y > ext.x) ? 1 : 0;
+    if (ext.z > ext[axis]) axis = 2;
+    float mid = 0.5f * (mn[axis] + mx[axis]);
+
+    auto pivot = std::partition(idx.begin() + start, idx.begin() + end,
+        [&](int i) {
+            const Tri& t = tris[i];
+            return (verts[t.a][axis] + verts[t.b][axis] + verts[t.c][axis]) < 3.0f * mid;
+        });
+    int m = (int)(pivot - idx.begin());
+    // Guard against degenerate splits (all centroids on one side).
+    if (m == start || m == end) m = (start + end) / 2;
+
+    int left  = buildBVHNode(nodes, verts, tris, idx, start, m);
+    int right = buildBVHNode(nodes, verts, tris, idx, m, end);
+    // Use index, not pointer/reference — nodes[] is valid because we reserved.
+    nodes[nodeIdx].left  = left;
+    nodes[nodeIdx].right = right;
+    return nodeIdx;
+}
+
+} // anonymous namespace
+
+void Mesh::buildBVH()
+{
+    bvh.clear();
+    if (triangles.empty() || vertices.empty()) return;
+    std::vector<int> idx(triangles.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    // A full binary tree with N leaves has at most 2N-1 nodes.
+    bvh.reserve(2 * triangles.size());
+    buildBVHNode(bvh, vertices, triangles, idx, 0, (int)triangles.size());
+}
 
 void Mesh::clear() {
     vertices.clear();

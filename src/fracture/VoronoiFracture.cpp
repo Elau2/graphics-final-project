@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <random>
 
 namespace destruct {
@@ -106,27 +107,35 @@ voronoiFracture(const Mesh& mesh,
 
     const std::size_t before = outFragments.size();
 
-    // For each seed i, clip the original mesh by bisector(s_i, s_j) for
-    // every j != i. Plane::bisector is oriented so the "inside" half-space
-    // (the half MeshClipper keeps) contains `a`. So bisector(s_i, s_j)
-    // keeps the side of s_i, which is exactly the Voronoi half-space.
-    std::vector<Plane> planes;
-    planes.reserve(seeds.size() - 1);
+    // Each fragment only reads `mesh` and `seeds` (both const) and writes to
+    // a private Mesh — perfectly thread-safe for parallel execution.
+    const std::size_t N = seeds.size();
+    std::vector<std::future<Mesh>> futures;
+    futures.reserve(N);
 
-    for (std::size_t i = 0; i < seeds.size(); ++i) {
-        planes.clear();
-        for (std::size_t j = 0; j < seeds.size(); ++j) {
-            if (j == i) continue;
-            planes.push_back(Plane::bisector(seeds[i], seeds[j]));
-        }
+    for (std::size_t i = 0; i < N; ++i) {
+        futures.push_back(std::async(std::launch::async,
+            [&mesh, &seeds, i, N]() -> Mesh {
+                std::vector<Plane> localPlanes;
+                localPlanes.reserve(N - 1);
+                for (std::size_t j = 0; j < N; ++j) {
+                    if (j != i)
+                        localPlanes.push_back(Plane::bisector(seeds[i], seeds[j]));
+                }
+                Mesh fragment;
+                if (MeshClipper::clipAgainstAll(mesh, localPlanes, fragment)
+                    && !fragment.empty())
+                {
+                    fragment.recomputeNormals();
+                }
+                return fragment;
+            }));
+    }
 
-        Mesh fragment;
-        if (MeshClipper::clipAgainstAll(mesh, planes, fragment)
-            && !fragment.empty())
-        {
-            fragment.recomputeNormals();
+    for (auto& f : futures) {
+        Mesh fragment = f.get();
+        if (!fragment.empty())
             outFragments.emplace_back(std::move(fragment));
-        }
     }
 
     return outFragments.size() - before;

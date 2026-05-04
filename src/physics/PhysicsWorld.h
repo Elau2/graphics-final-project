@@ -98,11 +98,11 @@ public:
  
 private:
     void integrateForces(float dt);
-    void collideGround();
+    void collideGround(float dt);
     void updateSleep(float dt);
     void collideBodiesDetect();
-    void collideBodiesResolve();
     void collideBodiesCorrect();  // add this
+    void collideBodiesResolve(bool doPositionCorrection = false);
  
     struct CachedPair {
         RigidBody* a;
