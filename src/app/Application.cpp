@@ -2,32 +2,41 @@
 #include "app/Application.h"
 #include "mesh/OBJLoader.h"
 #include "mesh/MeshProperties.h"
-
+#include "metrics/FractureMetrics.h"
+ 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+ 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
-
+ 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-
+ 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
 #include <limits>
 #include <utility>
-
+ 
 namespace destruct {
-
+ 
 // Lifecycle
 Application::Application(Config cfg) : cfg_(std::move(cfg)) {}
-
+ 
 Application::~Application()
 {
     shutdown();
 }
-
+ 
 void Application::shutdown()
 {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+ 
     gpuMeshes_.clear();   // delete GL resources while context is alive
     if (window_) {
         glfwDestroyWindow(window_);
@@ -35,20 +44,20 @@ void Application::shutdown()
     }
     glfwTerminate();
 }
-
+ 
 bool Application::initWindow()
 {
     if (!glfwInit()) {
         std::cerr << "glfwInit failed\n";
         return false;
     }
-
+ 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_SAMPLES, 4);
-
+ 
     window_ = glfwCreateWindow(cfg_.windowWidth,
                                cfg_.windowHeight,
                                cfg_.windowTitle.c_str(),
@@ -60,7 +69,7 @@ bool Application::initWindow()
     }
     glfwMakeContextCurrent(window_);
     glfwSwapInterval(1); // vsync on
-
+ 
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, &Application::onFramebufferSize);
     glfwSetMouseButtonCallback  (window_, &Application::onMouseButton);
@@ -69,7 +78,7 @@ bool Application::initWindow()
     glfwSetKeyCallback          (window_, &Application::onKey);
     return true;
 }
-
+ 
 bool Application::initGL()
 {
     glewExperimental = GL_TRUE;
@@ -82,19 +91,27 @@ bool Application::initGL()
     }
     // glewInit often leaves an GL_INVALID_ENUM queued; flush it.
     (void)glGetError();
-
+ 
     int fbw, fbh;
     glfwGetFramebufferSize(window_, &fbw, &fbh);
     renderer_.setViewport(camera_, fbw, fbh);
-
+ 
     if (!renderer_.init(cfg_.shaderDir)) {
         std::cerr << "renderer init failed\n";
         return false;
     }
     glEnable(GL_MULTISAMPLE);
+ 
+    // Initialise ImGui (used for the metrics overlay).
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window_, /*install_callbacks=*/false);
+    ImGui_ImplOpenGL3_Init("#version 330");
+ 
     return true;
 }
-
+ 
 // Scene setup
 void Application::loadSourceMesh()
 {
@@ -113,7 +130,7 @@ void Application::loadSourceMesh()
     } else {
         sourceMesh_ = Mesh::makeCube(0.5f);
     }
-
+ 
     // Normalize any OBJ-loaded mesh to a canonical size + position so the
     // camera, spawn offset, and physics tuning work uniformly across input
     // files. Target: centered on origin, max AABB dimension = 1.0 (matches
@@ -137,10 +154,10 @@ void Application::loadSourceMesh()
                   << " tris="  << sourceMesh_.triangles.size()
                   << " scale=" << scale << "\n";
     }
-
+ 
     sourceMesh_.recomputeNormals();
 }
-
+ 
 void Application::clearScene()
 {
     world_.clear();
@@ -150,7 +167,7 @@ void Application::clearScene()
     scrubFrame_ = 0;
     initialStates_.clear();
 }
-
+ 
 void Application::syncUniformGridToFragmentCount()
 {
     uniformNx_ = uniformNy_ = uniformNz_ = 1;
@@ -164,7 +181,7 @@ void Application::syncUniformGridToFragmentCount()
         }
     }
 }
-
+ 
 void Application::buildRigidBodiesAndGPUMeshes(
     const std::vector<Mesh>& fragments)
 {
@@ -174,7 +191,7 @@ void Application::buildRigidBodiesAndGPUMeshes(
     for (const auto& frag : fragments) {
         auto body = RigidBody::fromMesh(frag, /*density*/ 1200.0f);
         if (!body) continue;
-
+ 
         // The "approxCoM" from AABB above is only for placement; the
         // accurate CoM is already baked into the body. To put the body
         // back in its original world slot, we need to know the exact
@@ -182,16 +199,16 @@ void Application::buildRigidBodiesAndGPUMeshes(
         // internally. Recompute it here by the same method so we agree.
         MassProperties mp = computeMassProperties(frag);
         glm::vec3 trueCoM = mp.centerOfMass;
-
+ 
         body->position = spawnOffset_ + trueCoM;
-
+ 
         auto gm = std::make_unique<GPUMesh>();
         gm->uploadFromMesh(body->meshLocal);
-
+ 
         gpuMeshes_.push_back(std::move(gm));
         world_.addBody(std::move(body));
     }
-
+ 
     // Snapshot the post-build configuration so R (restart) can put every
     // fragment back exactly where it started, without re-running fracture.
     initialStates_.clear();
@@ -200,13 +217,13 @@ void Application::buildRigidBodiesAndGPUMeshes(
         initialStates_.push_back({ b->position, b->orientation });
     }
 }
-
+ 
 void Application::refracture(FractureMethod method,
                              bool impactBiased,
                              const glm::vec3& impactPoint)
 {
     clearScene();
-
+ 
     std::vector<Mesh> fragments;
     if (method == FractureMethod::Voronoi) {
         VoronoiParams params;
@@ -231,41 +248,51 @@ void Application::refracture(FractureMethod method,
         up.nz = uniformNz_;
         uniformFracture(sourceMesh_, up, fragments);
     }
-
+ 
     buildRigidBodiesAndGPUMeshes(fragments);
-
+ 
+    // Compute fracture metrics immediately after fracture so the overlay
+    // shows geometry results (yield, volume, uniformity, convexity) right away.
+    // Physics/settling metrics accumulate in simulate() until all bodies sleep.
+    int requested = (method == FractureMethod::Voronoi)
+                  ? currentFragmentCount_
+                  : uniformNx_ * uniformNy_ * uniformNz_;
+    metrics_ = FractureMetrics{};
+    computeFractureMetrics(sourceMesh_, fragments, requested, metrics_);
+    settling_ = true;
+ 
     // New scene -> always wait for the user to hit Space. This matches the
     // expectation that fracturing shouldn't auto-simulate; you should see
     // the fragments sitting whole, then start the simulation deliberately.
     paused_ = true;
-
+ 
     std::cerr << "[refracture] method="
               << (method == FractureMethod::Voronoi ? "voronoi" : "uniform")
               << " fragments=" << world_.bodies.size() << "\n";
 }
-
+ 
 // Run loop
 int Application::run()
 {
     if (!initWindow()) return 1;
     if (!initGL())     return 2;
-
+ 
     loadSourceMesh();
     currentFragmentCount_ = cfg_.initialFragments;
     syncUniformGridToFragmentCount();
     refracture(FractureMethod::Voronoi, false, glm::vec3(0.0f));
-
+ 
     // Nice starting camera: look at the rough scene centre.
     camera_.target   = spawnOffset_;
     camera_.distance = 4.5f;
-
+ 
     lastTime_ = glfwGetTime();
     lastTitleTime_ = lastTime_;
     frameCount_ = 0;
-
+ 
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
-
+ 
         double now = glfwGetTime();
         float  dt  = static_cast<float>(now - lastTime_);
         lastTime_  = now;
@@ -284,7 +311,7 @@ int Application::run()
         }
         // Clamp dt to avoid a giant explosion on a slow frame.
         dt = std::min(dt, 1.0f / 20.0f);
-
+ 
         handleInput(dt);
         simulate(dt);
         renderFrame();
@@ -292,17 +319,37 @@ int Application::run()
     }
     return 0;
 }
-
+ 
 void Application::handleInput(float /*dt*/)
 {
     // Orbit / pan are event-driven (mouse callbacks). Nothing continuous
     // needed here for now.
 }
-
+ 
 void Application::simulate(float dt)
 {
+    // Overlap error = sum of all body-body contact penetrations (from cached
+    // pairs in the last physics step) plus per-vertex ground penetration.
+    // Updated every frame including when paused so scrubbing shows live values.
+    {
+        // Body-body: reuse penetration data already computed by collideBodiesDetect.
+        float overlap = world_.totalPenetration();
+ 
+        // Ground: per-vertex test, same as collideGround() uses internally.
+        for (const auto& bPtr : world_.bodies) {
+            const RigidBody* b = bPtr.get();
+            if (b->isStatic()) continue;
+            if (b->position.y - b->boundingRadius > world_.groundY) continue;
+            for (const auto& vLocal : b->meshLocal.vertices) {
+                float pen = world_.groundY - b->bodyToWorld(vLocal).y;
+                if (pen > 0.0f) overlap += pen;
+            }
+        }
+        metrics_.finalOverlapError = overlap;
+    }
+ 
     if (paused_) return;
-
+ 
     // Step with a fixed sub-timestep for numerical stability.
     const float subDt = 1.0f / 120.0f;
     float remaining = dt;
@@ -312,11 +359,21 @@ void Application::simulate(float dt)
         world_.step(h);
         remaining -= h;
     }
-
+ 
+    // Track settling time and peak KE until all bodies sleep.
+    if (settling_) {
+        updatePhysicsMetrics(dt, world_, metrics_);
+ 
+        bool allAsleep = std::all_of(
+            world_.bodies.begin(), world_.bodies.end(),
+            [](const auto& b){ return b->isStatic() || b->sleeping; });
+        if (allAsleep) settling_ = false;
+    }
+ 
     recorder_.recordFrame(world_.bodies);
     scrubFrame_ = recorder_.frameCount() - 1;
 }
-
+ 
 void Application::renderFrame()
 {
     int fbw, fbh;
@@ -325,11 +382,21 @@ void Application::renderFrame()
         renderer_.setViewport(camera_, fbw, fbh);
     }
     renderer_.render(camera_, world_.bodies, gpuMeshes_, bodyColors_);
+ 
+    // ImGui frame: must bracket all ImGui calls.
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+ 
+    drawMetricsOverlay(metrics_, metricThresholds_, settling_);
+ 
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
-
+ 
 // Raycasting + explosions
 namespace {
-
+ 
 // Ray/triangle intersection (Moller-Trumbore). Returns true and sets t
 // on hit (t > 0). No backface culling so we can hit inward-facing tris of
 // concave fragment assemblies.
@@ -355,7 +422,7 @@ bool rayTri(const glm::vec3& o, const glm::vec3& d,
     tOut = t;
     return true;
 }
-
+ 
 // Ray vs AABB slab test. Used as a broad-phase reject in pickBodyByRay.
 bool rayAABB(const glm::vec3& o, const glm::vec3& d,
              const glm::vec3& bbMin, const glm::vec3& bbMax)
@@ -373,26 +440,26 @@ bool rayAABB(const glm::vec3& o, const glm::vec3& d,
     }
     return true;
 }
-
+ 
 } // namespace
-
+ 
 int Application::pickBodyByRay(double px, double py, glm::vec3& outHit) const
 {
     glm::vec3 ro, rd;
     camera_.getRayFromScreen(px, py, ro, rd);
-
+ 
     int   bestIdx = -1;
     float bestT   = std::numeric_limits<float>::infinity();
-
+ 
     for (std::size_t i = 0; i < world_.bodies.size(); ++i) {
         const auto& b = world_.bodies[i];
-
+ 
         // Transform the ray into body space to avoid transforming every vertex.
         glm::vec3 roBody = b->worldToBody(ro);
         glm::vec3 rdBody = glm::conjugate(b->orientation) * rd;
-
+ 
         if (!rayAABB(roBody, rdBody, b->aabbMin, b->aabbMax)) continue;
-
+ 
         const auto& verts = b->meshLocal.vertices;
         for (const auto& tri : b->meshLocal.triangles) {
             float t;
@@ -410,7 +477,7 @@ int Application::pickBodyByRay(double px, double py, glm::vec3& outHit) const
     outHit = ro + rd * bestT;
     return bestIdx;
 }
-
+ 
 void Application::applyExplosion(const glm::vec3& impactPoint, float strength)
 {
     for (auto& b : world_.bodies) {
@@ -425,7 +492,7 @@ void Application::applyExplosion(const glm::vec3& impactPoint, float strength)
         b->applyImpulseAtPoint(impulse, impactPoint);
     }
 }
-
+ 
 // GLFW trampolines
 void Application::onFramebufferSize(GLFWwindow* w, int /*wid*/, int /*hei*/)
 {
@@ -455,17 +522,17 @@ void Application::onKey(GLFWwindow* w, int k, int s, int act, int mods)
     auto* self = static_cast<Application*>(glfwGetWindowUserPointer(w));
     if (self) self->handleKey(k, s, act, mods);
 }
-
+ 
 void Application::handleMouseButton(int b, int act, int /*mods*/)
 {
     double x, y;
     glfwGetCursorPos(window_, &x, &y);
     lastCursorX_ = x;
     lastCursorY_ = y;
-
+ 
     if (b == GLFW_MOUSE_BUTTON_LEFT)   leftDown_   = (act == GLFW_PRESS);
     if (b == GLFW_MOUSE_BUTTON_MIDDLE) middleDown_ = (act == GLFW_PRESS);
-
+ 
     if (b == GLFW_MOUSE_BUTTON_RIGHT && act == GLFW_PRESS) {
         // Raycast-driven impact: refracture around the hit, then apply an
         // explosion impulse. refracture() pauses the sim; the explosion
@@ -479,14 +546,14 @@ void Application::handleMouseButton(int b, int act, int /*mods*/)
         }
     }
 }
-
+ 
 void Application::handleCursorPos(double x, double y)
 {
     const double dx = x - lastCursorX_;
     const double dy = y - lastCursorY_;
     lastCursorX_ = x;
     lastCursorY_ = y;
-
+ 
     if (leftDown_) {
         camera_.orbit(static_cast<float>(dx) * 0.005f,
                       static_cast<float>(dy) * 0.005f);
@@ -494,16 +561,16 @@ void Application::handleCursorPos(double x, double y)
         camera_.pan(static_cast<float>(dx), static_cast<float>(dy));
     }
 }
-
+ 
 void Application::handleScroll(double /*dx*/, double dy)
 {
     camera_.dolly(static_cast<float>(dy));
 }
-
+ 
 void Application::handleKey(int k, int /*s*/, int act, int /*mods*/)
 {
     if (act != GLFW_PRESS && act != GLFW_REPEAT) return;
-
+ 
     switch (k) {
     case GLFW_KEY_ESCAPE:
         glfwSetWindowShouldClose(window_, GLFW_TRUE);
@@ -528,6 +595,12 @@ void Application::handleKey(int k, int /*s*/, int act, int /*mods*/)
         recorder_.clear();
         scrubFrame_ = 0;
         paused_ = true;
+        // Restart replays the same fracture from rest — reset settling tracker
+        // so physics metrics accumulate fresh from the next unpause.
+        metrics_.settlingTime      = 0.0f;
+        metrics_.peakKineticEnergy = 0.0f;
+        metrics_.finalOverlapError = 0.0f;
+        settling_ = true;
         break;
     case GLFW_KEY_F:
         // Refracture the pristine mesh with fresh seeds (was R in the
@@ -603,5 +676,6 @@ void Application::handleKey(int k, int /*s*/, int act, int /*mods*/)
     default: break;
     }
 }
-
+ 
 } // namespace destruct
+ 

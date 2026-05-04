@@ -86,6 +86,15 @@ public:
  
     // Advance the simulation by `dt` seconds. Typical values: 1/60 to 1/120.
     void step(float dt);
+
+
+    float totalPenetration() const {
+        float sum = 0.0f;
+        for (const auto& p : cachedPairs)
+            for (int i = 0; i < p.contactCount; ++i)
+                sum += p.contacts[i].penetration;
+        return sum;
+    }
  
 private:
     void integrateForces(float dt);

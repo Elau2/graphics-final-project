@@ -1,30 +1,30 @@
 cmake_minimum_required(VERSION 3.16)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(GeometryDestructionSimulator LANGUAGES CXX C)
-
+ 
 # ---------- General settings ----------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
+ 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
-
+ 
 if(MSVC)
     add_compile_options(/W3 /permissive- /Zc:__cplusplus)
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
-
+ 
 # Copy shaders next to the binary so the runtime can find them.
 set(SHADER_OUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/shaders/ DESTINATION ${SHADER_OUT_DIR})
-
+ 
 # ---------- Dependencies ----------
 include(FetchContent)
-
+ 
 # GLFW (window + input)
 FetchContent_Declare(
     glfw
@@ -35,7 +35,7 @@ set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
-
+ 
 # GLM (header-only math)
 FetchContent_Declare(
     glm
@@ -43,7 +43,7 @@ FetchContent_Declare(
     GIT_TAG        1.0.1
 )
 FetchContent_MakeAvailable(glm)
-
+ 
 # GLEW - prefer system install; fall back to FetchContent build
 find_package(GLEW QUIET)
 if(NOT GLEW_FOUND)
@@ -61,9 +61,31 @@ if(NOT GLEW_FOUND)
         )
     endif()
 endif()
-
+ 
 find_package(OpenGL REQUIRED)
-
+ 
+# ImGui (immediate-mode GUI, used for metrics overlay)
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.90.4
+)
+FetchContent_MakeAvailable(imgui)
+ 
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+ 
 # ---------- Our library + executable ----------
 set(CORE_SOURCES
     src/mesh/Mesh.cpp
@@ -80,8 +102,10 @@ set(CORE_SOURCES
     src/render/Renderer.cpp
     src/app/Application.cpp
     src/app/TimestepRecorder.cpp
+    src/metrics/FractureMetrics.cpp 
+    src/metrics/MetricsOverlay.cpp   
 )
-
+ 
 add_library(destruct_core STATIC ${CORE_SOURCES})
 target_include_directories(destruct_core PUBLIC src)
 target_compile_definitions(destruct_core PUBLIC
@@ -92,7 +116,8 @@ target_link_libraries(destruct_core PUBLIC
     glm::glm
     GLEW::GLEW
     OpenGL::GL
+    imgui
 )
-
+ 
 add_executable(destruct src/main.cpp)
 target_link_libraries(destruct PRIVATE destruct_core)
